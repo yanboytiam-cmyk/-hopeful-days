@@ -821,7 +821,7 @@
         <!-- Date of Birth -->
         <div class="fg">
           <label class="form-label" for="dobText">Date of Birth <span class="req">*</span></label>
-          <input class="form-input" type="text" id="dobText" inputmode="numeric" placeholder="DD/MM/YYYY" maxlength="10" autocomplete="bday">
+          <input class="form-input" type="text" id="dobText" inputmode="numeric" placeholder="MM/DD/YYYY" maxlength="10" autocomplete="bday">
           <input type="hidden" id="dob">
           <span class="err-msg" id="e-dob">Date of birth is required.</span>
           <div class="age-badge-wrap" id="ageBadgeWrap"></div>
@@ -1222,8 +1222,8 @@ document.getElementById('dobText').addEventListener('input', function() {
 
   const dobHidden = document.getElementById('dob');
   if (formatted.length === 10) {
-    const dd   = formatted.slice(0, 2);
-    const mm   = formatted.slice(3, 5);
+    const mm   = formatted.slice(0, 2);
+    const dd   = formatted.slice(3, 5);
     const yyyy = formatted.slice(6, 10);
     const isoDate = `${yyyy}-${mm}-${dd}`;
     dobHidden.value = isoDate;
@@ -1395,7 +1395,7 @@ function validateStep1() {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const isRealDate = d.getFullYear() === yyyy && d.getMonth() === mm - 1 && d.getDate() === dd;
     let dateError = null;
-    if (!isRealDate)    dateError = 'Please enter a valid date (DD/MM/YYYY).';
+    if (!isRealDate)    dateError = 'Please enter a valid date (MM/DD/YYYY).';
     else if (yyyy < 1900) dateError = 'Year must be 1900 or later.';
     else if (d >= today)  dateError = 'Date of birth cannot be today or in the future.';
     if (dateError) {
