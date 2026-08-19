@@ -623,6 +623,43 @@
     .sig-clear:hover { border-color: var(--primary); color: var(--primary); }
 
     .guardian-sep { border: none; border-top: 2px dashed var(--border); margin: 24px 0; }
+
+    /* ════════════════════════════════════════ CLIENT PHOTO ══ */
+    .photo-wrap {
+      display: flex; align-items: center; gap: 16px;
+      border: 2px dashed var(--border); border-radius: 8px;
+      background: #F8FAFB; padding: 14px;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .photo-wrap.filled { border-style: solid; border-color: var(--success); }
+    .photo-wrap.err    { border-color: var(--error); }
+    .photo-frame {
+      width: 92px; height: 115px; flex: none; border-radius: 6px;
+      background: #E3ECF2; border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+    }
+    .photo-frame img  { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .photo-frame span { font-size: 26px; color: #A9BECC; }
+    .photo-side { flex: 1; min-width: 0; }
+    .photo-note {
+      font-size: 12.5px; color: var(--text-light); line-height: 1.5;
+      margin: 0 0 10px;
+    }
+    .photo-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .photo-btn {
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600;
+      color: #fff; background: var(--primary); border: none; border-radius: 6px;
+      padding: 9px 16px; cursor: pointer; transition: background .2s;
+    }
+    .photo-btn:hover  { background: var(--primary-dk); }
+    .photo-btn.ghost  { color: var(--text-light); background: none; border: 1px solid var(--border); }
+    .photo-btn.ghost:hover { border-color: var(--primary); color: var(--primary); background: none; }
+    @media (max-width: 480px) {
+      .photo-wrap { flex-direction: column; align-items: stretch; }
+      .photo-frame { width: 108px; height: 135px; margin: 0 auto; }
+      .photo-actions .photo-btn { flex: 1; }
+    }
     #guardianSection { display: none; }
     #guardianSection.show { display: block; animation: fadeUp .35s ease; }
 
@@ -1003,6 +1040,30 @@
     </div>
 
     <div class="card">
+      <div class="sig-block">
+        <div class="sig-block-title">Photo Verification</div>
+        <span class="sig-sub-label">Client Photo <span class="req">*</span></span>
+        <div class="photo-wrap" id="photoWrap">
+          <div class="photo-frame" id="photoFrame"><span>👤</span></div>
+          <div class="photo-side">
+            <p class="photo-note">
+              A photo of the client is added to the signed consent form, next to
+              the identity details. Face the camera in good light.
+            </p>
+            <div class="photo-actions">
+              <button type="button" class="photo-btn" id="photoTake">Take Photo</button>
+              <button type="button" class="photo-btn ghost" id="photoPick">Choose a File</button>
+              <button type="button" class="photo-btn ghost" id="photoReset" style="display:none">Remove</button>
+            </div>
+          </div>
+        </div>
+        <span class="err-msg" id="e-clientPhoto">A client photo is required.</span>
+        <input type="file" id="photoCam"  accept="image/*" capture="user" hidden>
+        <input type="file" id="photoFile" accept="image/*" hidden>
+      </div>
+
+      <hr class="guardian-sep">
+
       <div class="sig-block">
         <div class="sig-block-title">Block A — Client Signature</div>
         <div class="form-grid" style="margin-bottom:20px">
@@ -1436,6 +1497,10 @@ function validateStep3() {
 
 function validateStep4() {
   let ok = true;
+
+  if (!clientPhoto) { document.getElementById('photoWrap').classList.add('err'); show('e-clientPhoto'); ok = false; }
+  else              { document.getElementById('photoWrap').classList.remove('err'); hide('e-clientPhoto'); }
+
   ok = requireText('printedName') && ok;
 
   const cEmpty = isCanvasBlank(document.getElementById('clientCanvas'));
@@ -1488,6 +1553,70 @@ function refreshDocHeader() {
 function fmtDate(s) {
   const [y, m, d] = s.split('-'); return `${m}/${d}/${y}`;
 }
+
+// ── CLIENT PHOTO ──────────────────────────────────────────────────────────────
+// Held as a data URL and sent with the rest of the payload. n8n drops it on
+// Drive just long enough for Google Docs to copy it into the consent form, then
+// deletes it, so nothing of the patient's face survives outside the signed PDF.
+let clientPhoto = null;
+
+function shrinkPhoto(dataUrl, maxSide, quality, done) {
+  const img = new Image();
+  img.onload = function () {
+    const s = Math.min(1, maxSide / Math.max(img.width, img.height));
+    const c = document.createElement('canvas');
+    c.width  = Math.round(img.width  * s);
+    c.height = Math.round(img.height * s);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    done(c.toDataURL('image/jpeg', quality));
+  };
+  // an unreadable file is better sent as-is than silently dropped
+  img.onerror = function () { done(dataUrl); };
+  img.src = dataUrl;
+}
+
+function readPhoto(file) {
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = function () {
+    shrinkPhoto(r.result, 900, 0.82, function (small) {
+      clientPhoto = small;
+      const frame = document.getElementById('photoFrame');
+      frame.textContent = '';
+      const im = document.createElement('img');
+      im.alt = 'Client photo'; im.src = small;
+      frame.appendChild(im);
+      document.getElementById('photoWrap').classList.add('filled');
+      document.getElementById('photoWrap').classList.remove('err');
+      document.getElementById('photoReset').style.display = '';
+      hide('e-clientPhoto');
+    });
+  };
+  r.readAsDataURL(file);
+}
+
+function clearPhoto() {
+  clientPhoto = null;
+  const frame = document.getElementById('photoFrame');
+  frame.textContent = '';
+  const ph = document.createElement('span');
+  ph.textContent = '👤';
+  frame.appendChild(ph);
+  document.getElementById('photoWrap').classList.remove('filled');
+  document.getElementById('photoReset').style.display = 'none';
+  document.getElementById('photoCam').value  = '';
+  document.getElementById('photoFile').value = '';
+}
+
+(function wirePhoto() {
+  const cam  = document.getElementById('photoCam');
+  const file = document.getElementById('photoFile');
+  document.getElementById('photoTake').addEventListener('click',  () => cam.click());
+  document.getElementById('photoPick').addEventListener('click',  () => file.click());
+  document.getElementById('photoReset').addEventListener('click', clearPhoto);
+  cam.addEventListener('change',  e => readPhoto(e.target.files[0]));
+  file.addEventListener('change', e => readPhoto(e.target.files[0]));
+})();
 
 // ── STEP 4 SETUP ──────────────────────────────────────────────────────────────
 const canvasReady = { client: false, guardian: false };
@@ -1661,7 +1790,7 @@ async function submitForm() {
       dateOfBirth: dob, age: clientAge, isMinor,
       phoneNumber: document.getElementById('phone').value.trim() || null,
       medicalRecordNumber: mrn || null,
-      printedName: pn, signature: cs
+      printedName: pn, signature: cs, photo: clientPhoto
     },
     consent: {
       formTitle:    'Informed Consent for Mental Health Services',
