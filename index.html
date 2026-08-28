@@ -1166,6 +1166,103 @@
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const WEBHOOK_URL = 'https://n8n.srv1325858.hstgr.cloud/webhook/MR%20COLINS';
 
+/* How long we wait on the server before we stop waiting and keep the visit on
+   this device instead. Filing genuinely takes a while here: measured over the
+   last sixty submissions, the median is 32 seconds and the slowest healthy one
+   took 51. So the limit has to sit well above that, or we would abandon
+   submissions that were about to succeed and file them twice. Ninety seconds
+   is roughly double the worst healthy case, and far below the browser's own
+   limit of about five minutes, which is what staff sat through on 2026-08-28
+   while the server was suspended. */
+const SEND_TIMEOUT = 90000;
+const RETRY_EVERY  = 60000;
+const QUEUE_KEY    = 'hd_pending';
+
+/* ── A VISIT IS NEVER LOST ────────────────────────────────────────────────────
+   This form used to have no local copy at all: if the send failed, the only
+   copy of the patient's signature was the one on screen, and closing the tab
+   destroyed it. On 2026-08-28 the server was down for three hours and visits
+   were lost that way. Now a failed send is kept on the device and retried on
+   its own. */
+function pendingVisits() {
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); } catch (_) { return []; }
+}
+function setPendingVisits(list) {
+  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(list)); } catch (_) {}
+  paintPending();
+}
+function paintPending() {
+  const n = pendingVisits().length;
+  let el = document.getElementById('hdPendingStrip');
+  if (!n) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'hdPendingStrip';
+    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;padding:10px 14px;'
+      + 'background:#8a5a00;color:#fff;font:14px/1.4 system-ui,sans-serif;text-align:center';
+    document.body.appendChild(el);
+  }
+  el.textContent = n === 1
+    ? '1 visit saved on this device, still being sent. Keep this page open.'
+    : n + ' visits saved on this device, still being sent. Keep this page open.';
+}
+
+/* Resolves {ok:true, text} when the visit is filed, {ok:false} when it is not.
+   Never throws, and never waits longer than SEND_TIMEOUT.
+
+   The deadline resolves the promise itself rather than relying on the abort to
+   unblock the fetch. On a browser without AbortController the abort does
+   nothing at all, and counting on it would silently restore the five minute
+   wait this whole change exists to remove. */
+function postVisit(payload) {
+  return new Promise(resolve => {
+    let done = false;
+    const ctrl = ('AbortController' in window) ? new AbortController() : null;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      if (ctrl) { try { ctrl.abort(); } catch (_) {} }
+      resolve({ ok: false });
+    }, SEND_TIMEOUT);
+
+    const opts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    };
+    if (ctrl) opts.signal = ctrl.signal;
+
+    fetch(WEBHOOK_URL, opts)
+      .then(res => res.ok ? res.text().then(t => ({ ok: true, text: t })) : { ok: false })
+      .then(r => {
+        if (done) return;
+        done = true; clearTimeout(timer);
+        resolve(r);
+      })
+      .catch(() => {
+        if (done) return;
+        done = true; clearTimeout(timer);
+        resolve({ ok: false });
+      });
+  });
+}
+
+let hdFlushing = false;
+async function flushPending() {
+  const q = pendingVisits();
+  if (!q.length || hdFlushing || !navigator.onLine) return;
+  hdFlushing = true;
+  const rest = [];
+  /* One at a time: each visit carries signatures and a photo, and firing them
+     all at once on a thin connection is how you lose all of them. */
+  for (const item of q) {
+    const r = await postVisit(item);
+    if (!r.ok) rest.push(item);
+  }
+  hdFlushing = false;
+  setPendingVisits(rest);
+}
+
 // ── STATE ─────────────────────────────────────────────────────────────────────
 let currentStep = 1;
 const TOTAL     = 5;
@@ -1302,6 +1399,16 @@ document.getElementById('dobText').addEventListener('input', function() {
 // ════════════════════════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
+  /* Anything left on this device by a failed send goes out now, and keeps
+     trying on its own. The two events below are not enough on their own: on
+     2026-08-28 the phones never lost signal, the server was down, so "online"
+     never fired and nothing would have been retried. */
+  paintPending();
+  flushPending();
+  setInterval(flushPending, RETRY_EVERY);
+  window.addEventListener('online', flushPending);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) flushPending(); });
+
   // Clear errors on input
   ['firstName','lastName'].forEach(id => {
     document.getElementById(id).addEventListener('input', () => clearFieldErr(id));
@@ -1812,46 +1919,38 @@ async function submitForm() {
   showStep(5, 'forward');
   startTimer();
 
-  try {
-    const res = await fetch(WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    
-    if (res.ok) {
-      const downloadLink = await res.text();
-      stopTimer();
-      
-      const linkEl = document.getElementById('downloadPdfBtn');
-      // Clean potential quotes from webhook raw text
-      linkEl.href = downloadLink.replace(/^"|"$/g, '').trim();
-      
-      document.getElementById('step5-loading').style.display = 'none';
-      document.getElementById('step5-success').style.display = 'block';
-    } else {
-      stopTimer();
-      const el = document.getElementById('step5-loading');
-      el.textContent = '';
-      const t = document.createElement('div');
-      t.className = 'success-title'; t.style.color = 'var(--error)';
-      t.textContent = 'Submission failed (HTTP ' + res.status + ')';
-      const p = document.createElement('p');
-      p.className = 'success-msg';
-      p.textContent = 'Please try again or contact support.';
-      el.append(t, p);
-      isSubmitting = false;
-    }
-  } catch (err) {
-    stopTimer();
+  const result = await postVisit(payload);
+  stopTimer();
+
+  if (result.ok) {
+    const linkEl = document.getElementById('downloadPdfBtn');
+    // Clean potential quotes from webhook raw text
+    linkEl.href = result.text.replace(/^"|"$/g, '').trim();
+
+    document.getElementById('step5-loading').style.display = 'none';
+    document.getElementById('step5-success').style.display = 'block';
+  } else {
+    /* The visit is kept on this device and sent again on its own. Two things
+       must be said, because on 2026-08-28 neither was: that the signature was
+       taken and is safe, and that the patient must not sign a second time.
+       The old wording ("check your connection") blamed a network that was
+       working fine, and staff started the visit over. */
+    const q = pendingVisits(); q.push(payload); setPendingVisits(q);
+
     const el = document.getElementById('step5-loading');
     el.textContent = '';
     const t = document.createElement('div');
-    t.className = 'success-title'; t.style.color = 'var(--error)';
-    t.textContent = 'Network Error';
+    t.className = 'success-title';
+    t.textContent = 'Saved on this device';
     const p = document.createElement('p');
     p.className = 'success-msg';
-    p.textContent = err.message + ' — Please check your connection and try again.';
+    p.textContent = navigator.onLine
+      ? 'The office system is not answering right now. This visit is signed and saved on this '
+        + 'device, and it will be sent on its own as soon as the system answers. Nothing is lost, '
+        + 'do not ask the patient to sign again. Please keep this page open.'
+      : 'There is no connection right now. This visit is signed and saved on this device, and it '
+        + 'will be sent on its own as soon as you have signal. Nothing is lost, do not ask the '
+        + 'patient to sign again. Please keep this page open.';
     el.append(t, p);
     isSubmitting = false;
   }
