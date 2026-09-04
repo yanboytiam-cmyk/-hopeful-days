@@ -1134,7 +1134,7 @@
       <div class="success-title">Generating your Document...</div>
       <p class="success-msg">Please wait while your PDF is securely generated. This process takes approximately a minute.</p>
       <div style="margin-top: 24px; font-family: 'DM Sans', sans-serif; font-size: 16px; font-weight: 600; color: var(--primary);">
-        Estimated time remaining: <span id="ss-timer">01:45</span>
+        Estimated time remaining: <span id="ss-timer">00:30</span>
       </div>
     </div>
     
@@ -1142,12 +1142,12 @@
     <div class="success-screen" id="step5-success" style="display: none;">
       <div class="success-icon">✅</div>
       <div class="success-title">Document Ready</div>
-      <p class="success-msg">Your informed consent has been successfully generated and securely saved.</p>
+      <p class="success-msg">Your informed consent is signed and filed with the practice. Download your own copy below and keep it.</p>
       <div style="margin-top: 36px;">
-        <a href="#" id="downloadPdfBtn" target="_blank" class="btn btn-primary" style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; padding: 14px 32px; font-size: 16px;">
+        <button type="button" id="downloadPdfBtn" class="btn btn-primary" style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 32px; font-size: 16px;">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
           Download Signed PDF
-        </a>
+        </button>
       </div>
       <div style="margin-top: 20px;">
         <button class="btn btn-secondary" onclick="location.reload()">+ New Document</button>
@@ -1160,21 +1160,35 @@
 
 
 <!-- ══════════════════════════════════════════════════ SCRIPT ══ -->
+<script src="vendor/jspdf.umd.min.js"></script>
+<script src="documents.js"></script>
 <script>
 'use strict';
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const WEBHOOK_URL = 'https://n8n.srv1325858.hstgr.cloud/webhook/MR%20COLINS';
+/* Nouveau chemin : l'ancien (`MR COLINS`) reste en place le temps que les
+   telephones qui ont garde la page en cache basculent d'eux-memes. Il fabrique
+   encore le document a l'ancienne, ce qui n'est pas faux, seulement lent. */
+const WEBHOOK_URL = 'https://n8n.srv1325858.hstgr.cloud/webhook/hopeful-days-consent';
+
+/* Le document fabrique sur cet appareil. Il est garde ici pour que le patient
+   puisse le telecharger meme si l'envoi echoue. */
+let pdfLocal = '', pdfLocalNom = '';
 
 /* How long we wait on the server before we stop waiting and keep the visit on
-   this device instead. Filing genuinely takes a while here: measured over the
-   last sixty submissions, the median is 32 seconds and the slowest healthy one
-   took 51. So the limit has to sit well above that, or we would abandon
-   submissions that were about to succeed and file them twice. Ninety seconds
-   is roughly double the worst healthy case, and far below the browser's own
-   limit of about five minutes, which is what staff sat through on 2026-08-28
-   while the server was suspended. */
-const SEND_TIMEOUT = 90000;
+   this device instead.
+
+   Those thirty-two seconds are gone. They were the Google Docs machinery:
+   copy a template, replace markers, upload the photo and each signature,
+   insert them by separate HTTP calls, export to PDF, delete the leftovers.
+   The document is now built on this device before anything is sent, and n8n
+   only files it. Measured on 2026-09-04, end to end: **7.9 seconds**.
+
+   The limit still sits far above that, and deliberately so: abandoning a
+   request that then succeeds on the server files the visit twice when the
+   queue resends it, and a patient recorded twice is worse than a patient
+   recorded slowly. Sixty seconds is roughly eight times the measured time. */
+const SEND_TIMEOUT = 60000;
 const RETRY_EVERY  = 60000;
 const QUEUE_KEY    = 'hd_pending';
 
@@ -1206,6 +1220,30 @@ function paintPending() {
     ? '1 visit saved on this device, still being sent. Keep this page open.'
     : n + ' visits saved on this device, still being sent. Keep this page open.';
 }
+
+/* Rend au patient le document fabrique sur son telephone. Aucun reseau,
+   aucun lien : le fichier est deja la. */
+function garderPdf() {
+  if (!pdfLocal) return;
+  try {
+    const bin = atob(pdfLocal);
+    let n = bin.length;
+    const u = new Uint8Array(n);
+    while (n--) u[n] = bin.charCodeAt(n);
+    const url = URL.createObjectURL(new Blob([u], { type: 'application/pdf' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = pdfLocalNom || 'Informed Consent.pdf';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+  } catch (_) { /* le navigateur a bloque : le bouton reste, il peut reessayer */ }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const b = document.getElementById('downloadPdfBtn');
+  if (b) b.addEventListener('click', garderPdf);
+});
 
 /* Resolves {ok:true, text} when the visit is filed, {ok:false} when it is not.
    Never throws, and never waits longer than SEND_TIMEOUT.
@@ -1856,9 +1894,12 @@ function isCanvasBlank(canvas) {
 let timerInt;
 
 function startTimer() {
-  let seconds = 105; // 1m 45s
+  /* Trente secondes, pas cent-cinq. Le compte a rebours est une promesse
+     faite au patient : quand il annoncait 1 min 45 pour un envoi qui en prend
+     8, il ne rassurait pas, il faisait attendre quelqu'un qui pouvait partir. */
+  let seconds = 30;
   const tEl = document.getElementById('ss-timer');
-  tEl.textContent = '01:45';
+  tEl.textContent = '00:30';
   clearInterval(timerInt);
   timerInt = setInterval(() => {
     seconds--;
@@ -1919,14 +1960,36 @@ async function submitForm() {
   showStep(5, 'forward');
   startTimer();
 
+  /* Le document est fabrique ICI, sur l'appareil, avant de partir. C'est ce
+     qui permet au patient de repartir avec son exemplaire meme si l'envoi
+     echoue : perdre une signature serait pire qu'un depot a refaire.
+     Auparavant il etait assemble par n8n en soixante-cinq noeuds, a partir
+     d'un modele Google Docs. */
+  try {
+    const docs = await window.construireConsentementHopeful(payload);
+    pdfLocal = docs.pdf;
+    pdfLocalNom = docs.pdfFileName;
+    payload.pdf = docs.pdf;
+    payload.pdfFileName = docs.pdfFileName;
+    /* La photo et les signatures sont desormais DANS le document. Les envoyer
+       une seconde fois doublerait le poids de l'envoi, et multiplierait les
+       endroits ou la meme image d'un patient est conservee. */
+    delete payload.client.photo;
+    delete payload.client.signature;
+    if (payload.guardian) delete payload.guardian.signature;
+  } catch (e) {
+    /* On envoie quand meme : mieux vaut une soumission signalee en erreur
+       qu'une visite qui disparait sans laisser de trace. */
+    payload.pdfError = 'Document build failed: ' + String((e && e.message) || e);
+  }
+
   const result = await postVisit(payload);
   stopTimer();
 
   if (result.ok) {
-    const linkEl = document.getElementById('downloadPdfBtn');
-    // Clean potential quotes from webhook raw text
-    linkEl.href = result.text.replace(/^"|"$/g, '').trim();
-
+    /* Plus de lien Drive : le patient a deja son exemplaire sur son telephone,
+       et un lien de document medical qui circule est un document medical qui
+       fuit. Le cabinet, lui, le retrouve dans son Drive comme avant. */
     document.getElementById('step5-loading').style.display = 'none';
     document.getElementById('step5-success').style.display = 'block';
   } else {
@@ -1952,6 +2015,18 @@ async function submitForm() {
         + 'will be sent on its own as soon as you have signal. Nothing is lost, do not ask the '
         + 'patient to sign again. Please keep this page open.';
     el.append(t, p);
+
+    /* Le document existe sur cet appareil, envoi ou pas. Le proposer ici
+       change tout pour le patient : il repart avec sa copie signee au lieu
+       de repartir les mains vides en devant faire confiance. */
+    if (pdfLocal) {
+      const b = document.createElement('button');
+      b.className = 'btn btn-primary';
+      b.style.marginTop = '24px';
+      b.textContent = 'Download my copy';
+      b.addEventListener('click', garderPdf);
+      el.append(b);
+    }
     isSubmitting = false;
   }
 }
